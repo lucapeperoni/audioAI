@@ -1,0 +1,15 @@
+#––– DATA –––#
+data/raw/
+data/processed/
+
+#––– MODEL FILES –––#
+*.pt
+*.onnx
+*.ckpt
+
+#––– PYTHON & JUPYTER CACHE –––#
+__pycache__/
+.ipynb_checkpoints/
+
+#––– BUILD ARTIFACTS (quando farai il plugin) –––#
+plugin/**/build/
