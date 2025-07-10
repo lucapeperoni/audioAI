@@ -1,15 +1,18 @@
-#––– DATA –––#
+cat > .gitignore <<'EOF'
+# macOS
+.DS_Store
+
+# dati grezzi e pesi modello
 data/raw/
 data/processed/
-
-#––– MODEL FILES –––#
 *.pt
 *.onnx
 *.ckpt
 
-#––– PYTHON & JUPYTER CACHE –––#
+# cache Python / Jupyter
 __pycache__/
 .ipynb_checkpoints/
 
-#––– BUILD ARTIFACTS (quando farai il plugin) –––#
+# artefatti build plugin
 plugin/**/build/
+EOF
