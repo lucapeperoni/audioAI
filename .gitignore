@@ -16,3 +16,6 @@ __pycache__/
 # artefatti build plugin
 plugin/**/build/
 EOF
+# artifacts
+models/
+*.onnx
