@@ -23,6 +23,9 @@ import torch.nn.functional as F
 # ─────────── costanti ────────────────────────────────────────────────────
 SR          = 22_050
 N_MELS      = 128      # deve combaciare con il training
+VIS_MELS    = 512      # per visualizzare lo spettro in alta definizione
+OFFSET_FRAMES = 8        # quanti frame (≈0.18 s) di “margine passato” a sinistra
+BAR_X         = OFFSET_FRAMES * 8   # posizione x in pixel (1024px frame)
 HOP         = 512
 FRAME_DUR   = HOP / SR
 GENRES      = ['blues','classical','country','disco','hiphop',
@@ -69,10 +72,39 @@ def audio_to_mel(y: np.ndarray) -> np.ndarray:
     )
     return librosa.power_to_db(S, ref=np.max)
 
+# ─────────── helper slice → HD frame ────────────────────────────────────
+def slice_to_hd(spec_low: np.ndarray) -> np.ndarray:
+    """
+    Converte la finestra 128×128 (spec_low) in un frame HD 1024²:
+    * ricompone la parte di S_db corrispondente con 512 Mel
+    * applica colormap inferno
+    """
+    # upsample verticale ricombinando il log‐Mel con più bande
+    # spec_low shape: (128, 128)
+    # usiamo ridimensionamento Lanczos verticale + orizzontale
+    spec_hd = cv2.resize(spec_low, (128, VIS_MELS), interpolation=cv2.INTER_LANCZOS4)
+    spec_hd = cv2.resize(spec_hd, (1024, 1024), interpolation=cv2.INTER_LANCZOS4)
+    spec_u8 = cv2.normalize(spec_hd, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
+    spec_u8_col = cv2.applyColorMap(spec_u8, cv2.COLORMAP_INFERNO)
+    return spec_u8_col
+
+def get_window(idx: int) -> np.ndarray:
+    """
+    Restituisce una finestra 128×128 spostata a sinistra di OFFSET_FRAMES.
+    Se siamo all’inizio, la parte mancante a sinistra viene riempita di zeri.
+    """
+    start = max(0, idx - OFFSET_FRAMES)
+    spec = S.S_db[:, start:start + 128]
+    if spec.shape[1] < 128:
+        pad = 128 - spec.shape[1]
+        spec = np.pad(spec, ((0, 0), (pad, 0)), mode='constant')
+    return spec
+
 # ─────────── CAM worker thread ───────────────────────────────────────────
 def cam_worker(q: queue.Queue, cache: dict, logits_d: dict):
     while True:
-        idx, spec = q.get()
+        idx = q.get()
+        spec = get_window(idx)
         z = (spec - spec.mean()) / (spec.std() + 1e-6)
         t = torch.tensor(z).unsqueeze(0).unsqueeze(0)
         t.requires_grad_()
@@ -89,7 +121,7 @@ def cam_worker(q: queue.Queue, cache: dict, logits_d: dict):
         spec_c  = cv2.applyColorMap(spec_u8, cv2.COLORMAP_INFERNO)
         red     = spec_c.copy(); red[mask] = (0,0,255)
         blend   = cv2.addWeighted(spec_c, 0.7, red, 0.3, 0)
-        blend   = cv2.resize(blend, (512, 512), cv2.INTER_CUBIC)
+        blend   = cv2.resize(blend, (1024, 1024), interpolation=cv2.INTER_LANCZOS4)
         cache[idx] = blend
         q.task_done()
 
@@ -119,8 +151,8 @@ if up and (("last_name" not in S) or (up.name != S.last_name)):
     threading.Thread(target=cam_worker,
                      args=(S.todo, S.cache, S.logits_dict),
                      daemon=True).start()
-    S.todo.put((0, S.S_db[:,0:128]))
-    S.todo.put((1, S.S_db[:,1:129]))
+    S.todo.put(0)
+    S.todo.put(1)
 
 # ─── controlli ───────────────────────────────────────────────────────────
 c1, c2, c3 = st.columns(3)
@@ -170,16 +202,19 @@ if up and S.S_db is not None:
 
 # ─── mostra frame corrente ──────────────────────────────────────────────
 if up:
-    spec = S.S_db[:, S.idx:S.idx+128]
+    spec = get_window(S.idx)
     if S.idx not in S.cache and not S.todo.full():
-        S.todo.put((S.idx, spec))
+        S.todo.put(S.idx)
     frame = S.cache.get(S.idx)
     if frame is None:
-        spec_u8 = cv2.normalize(spec, None, 0, 255, cv2.NORM_MINMAX
-                                ).astype('uint8')
-        frame = cv2.applyColorMap(spec_u8, cv2.COLORMAP_INFERNO)
-        frame = cv2.resize(frame, (512, 512), cv2.INTER_CUBIC)
-    st.image(frame, channels="BGR", use_container_width=True)
+        frame = slice_to_hd(spec)
+
+    # evidenzia l’istante corrente: barra semitrasparente sui primi 8 px
+    frame_disp = frame.copy()
+    h = frame_disp.shape[0]                      # 1024
+    cv2.rectangle(frame_disp, (BAR_X-3, 0), (BAR_X+3, h-1), (0, 255, 0), -1)  # verde pieno
+
+    st.image(frame_disp, channels="BGR", use_container_width=True)
 
     # top-2 live
     if S.logits_dict:
