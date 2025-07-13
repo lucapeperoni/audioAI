@@ -14,6 +14,7 @@ from __future__ import annotations
 import io, time, queue, threading, pathlib
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 import numpy as np
 import cv2, torch, librosa, sounddevice as sd
 from torchvision.models import resnet18
@@ -102,15 +103,24 @@ def get_window(idx: int) -> np.ndarray:
 
 # ─────────── CAM worker thread ───────────────────────────────────────────
 def cam_worker(q: queue.Queue, cache: dict, logits_d: dict):
+    cam_local = GradCAM(model, target_layer="layer3")   # thread‑local
     while True:
         idx = q.get()
+        if idx is None:                # sentinel to terminate old thread
+            q.task_done()
+            break
+        # wait until S_db is available
+        if "S_db" not in S:
+            q.task_done()
+            time.sleep(0.05)
+            continue
         spec = get_window(idx)
         z = (spec - spec.mean()) / (spec.std() + 1e-6)
         t = torch.tensor(z).unsqueeze(0).unsqueeze(0)
         t.requires_grad_()
         log = model(t)
         logits_d[idx] = log.softmax(1).squeeze().detach()
-        heat = cam_extr(log.argmax(1).item(), log)[0].squeeze()
+        heat = cam_local(log.argmax(1).item(), log)[0].squeeze()
         heat = F.interpolate(heat[None,None], size=spec.shape,
                              mode='bilinear', align_corners=False)[0,0]
         heat_u8 = cv2.normalize(heat.numpy(), None, 0, 255,
@@ -131,6 +141,12 @@ st.title("🎧 Live-Mel-CAM (stabile)")
 
 up = st.file_uploader("Carica MP3 o WAV", type=["mp3", "wav"])
 if up and (("last_name" not in S) or (up.name != S.last_name)):
+    # termina eventuale vecchio worker
+    if S.get("todo") is not None:
+        try:
+            S.todo.put_nowait(None)    # sentinel to shut down thread
+        except queue.Full:
+            pass
     # reset stato
     for k in ["y","S_db","cache","logits_dict","todo",
               "play","idx","start"]:
@@ -148,9 +164,13 @@ if up and (("last_name" not in S) or (up.name != S.last_name)):
     S.cache = {}
     S.logits_dict = {}
     S.todo = queue.Queue(maxsize=16)
-    threading.Thread(target=cam_worker,
-                     args=(S.todo, S.cache, S.logits_dict),
-                     daemon=True).start()
+    worker = threading.Thread(
+        target=cam_worker,
+        args=(S.todo, S.cache, S.logits_dict),
+        daemon=True
+    )
+    add_script_run_ctx(worker)   # collega il contesto Streamlit
+    worker.start()
     S.todo.put(0)
     S.todo.put(1)
 
@@ -181,21 +201,23 @@ if up:
 if up and S.S_db is not None:
     if st.button("🔍 Analizza offline (genere completo)", key="offline"):
         with st.spinner("Analisi offline in corso…"):
-            # disattiva i hook della Grad‑CAM: altrimenti richiedono gradienti
-            cam_extr.remove_hooks()    # disattiva i hook CAM
-            logits_buf = []
-            # stride 1: analizza ogni finestra da 128 frame
-            for i in range(0, S.S_db.shape[1] - 128 + 1, 1):
+            # Disattiva gli hook di Grad‑CAM per l'analisi offline
+            if hasattr(cam_extr, "remove_hooks"):
+                cam_extr.remove_hooks()
+
+            logits_sum = torch.zeros(10)
+            n_frames   = 0
+            for i in range(0, S.S_db.shape[1] - 128 + 1, 4):  # stride 4 ≈ 90 ms
                 spec = S.S_db[:, i:i+128]
                 z = (spec - spec.mean()) / (spec.std() + 1e-6)
-                t = torch.tensor(z, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-                with torch.no_grad():            # CAM non necessaria offline
-                    log = model(t)
-                logits_buf.append(log.squeeze())
-            g_soft = torch.stack(logits_buf).mean(0).softmax(0)
-            g1 = int(g_soft.argmax()); p1 = float(g_soft[g1]) * 100
-            g_soft[g1] = -1.0
-            g2 = int(g_soft.argmax()); p2 = float(g_soft[g2]) * 100
+                t = torch.tensor(z, dtype=torch.float32).unsqueeze(0).unsqueeze(0).requires_grad_(True)
+                log = model(t)                 # forward con hook
+                logits_sum += log.detach().squeeze()   # stacca grad
+                n_frames   += 1
+            g_soft = (logits_sum / n_frames).softmax(0)
+            g1 = int(g_soft.argmax()); p1 = float(g_soft[g1])*100
+            g_soft[g1] = -1
+            g2 = int(g_soft.argmax()); p2 = float(g_soft[g2])*100
             st.success(f"**Genere offline:** {GENRES[g1]} ({p1:.1f} %) – "
                        f"secondo: {GENRES[g2]} ({p2:.1f} %)")
         st.stop()
