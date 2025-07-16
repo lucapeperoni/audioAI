@@ -17,21 +17,28 @@ class MelDataset(Dataset):
               'jazz','metal','pop','reggae','rock']
 
     def __init__(self, split='train', normalize=False, augment=False):
-        root = pathlib.Path('data/processed')
+        # Path is now resolved relative to the project root, no matter where you launch Python
+        root = (pathlib.Path(__file__).resolve().parent.parent / 'data' / 'processed')
         files = sorted(root.glob('*.pt'))
 
-        torch.manual_seed(42)
-        idx = torch.randperm(len(files))
-        n   = len(idx)
-        if split == 'train':
-            self.files = [files[i] for i in idx[:int(0.8*n)]]
-        elif split == 'val':
-            self.files = [files[i] for i in idx[int(0.8*n):int(0.9*n)]]
-        else:  # test
-            self.files = [files[i] for i in idx[int(0.9*n):]]
+        # If split is None or 'all', return the full list of files (useful for k‑fold CV)
+        if split is None or split == 'all':
+            self.files = files
+        else:
+            torch.manual_seed(42)
+            idx = torch.randperm(len(files))
+            n   = len(idx)
+            if split == 'train':
+                self.files = [files[i] for i in idx[:int(0.8*n)]]
+            elif split == 'val':
+                self.files = [files[i] for i in idx[int(0.8*n):int(0.9*n)]]
+            else:  # test
+                self.files = [files[i] for i in idx[int(0.9*n):]]
 
         self.normalize = normalize
-        self.augment   = augment and split == 'train'
+        # Apply augmentation when requested and the split corresponds to training
+        # or when the user is using the full dataset (split None/'all' for k‑fold).
+        self.augment   = augment and (split == 'train' or split is None or split == 'all')
 
     def __len__(self):
         return len(self.files)

@@ -42,14 +42,12 @@ def load_model():
     m = resnet18(weights=None)
     m.conv1 = torch.nn.Conv2d(1, 64, 7, 2, 3, bias=False)
     m.fc    = torch.nn.Linear(512, 10)
-    # cerca prima in src/models/, poi in <repo>/models/
-    ckpt_src  = pathlib.Path(__file__).parent / "models" / "best_resnet18.pt"
-    ckpt_root = pathlib.Path(__file__).parent.parent / "models" / "best_resnet18.pt"
-    ckpt = ckpt_src if ckpt_src.exists() else ckpt_root
+    # carica il checkpoint dal path assoluto: <repo>/models/best_resnet18_fold4.pt
+    ckpt = pathlib.Path(__file__).resolve().parent.parent / "models" / "best_resnet18_fold4.pt"
     if ckpt.exists():
-        m.load_state_dict(torch.load(ckpt, map_location="cpu"), strict=False)
+        m.load_state_dict(torch.load(ckpt, map_location="cpu"))
     else:
-        st.warning("⚠️ Pesi non trovati: modello casuale.")
+        st.error(f"⚠️ Checkpoint non trovato: {ckpt}")
     m.eval()
     cam = GradCAM(m, target_layer="layer3")
     return m, cam
