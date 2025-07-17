@@ -1,46 +1,48 @@
 """
 kfold_train.py – orchestrazione k-fold cross-validation per GTZAN
 
-Esegue la cross-validation stratificata (K fold) usando StratifiedKFold
-e la funzione train_one_fold del train refactor. Salva:
+Esegue la CV stratificata usando StratifiedKFold e train_one_fold.
+Salva per ogni rappresentazione:
 
-    • best_resnet18_fold{fold}.pt   (da train_one_fold)
-    • log_fold{fold}.txt            (da train_one_fold)
-    • results_kfold.json            (accuracy di ogni fold + media e std)
+    • best_resnet18_<rep>_fold{n}.pt   (da train_one_fold)
+    • log_<rep>_fold{n}.txt            (da train_one_fold)
+    • results_kfold_<rep>.json         (accuracy di ogni fold + media e std)
 
-Uso rapido (default):
+Uso base (Mel):
     python kfold_train.py
 
-Override parametri, es.:
-    python kfold_train.py --k 3 --batch 16 --epochs 60
+Altri formati:
+    python kfold_train.py --rep lin
+    python kfold_train.py --rep mfcc
+    python kfold_train.py --rep dmfcc
+
+Override parametri:
+    python kfold_train.py --rep lin --k 3 --batch 16 --epochs 60
 """
 
 from __future__ import annotations
-
-import argparse
-import json
-import numpy as np
-import torch
+import argparse, json, numpy as np, torch
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import StratifiedKFold
 
 from dataset import MelDataset
-from train import train_one_fold, _get_device, BATCH_SIZE as TRAIN_BATCH, EPOCHS as TRAIN_EPOCHS
+from train import train_one_fold, _get_device, BATCH_SIZE as DEF_BATCH, EPOCHS as DEF_EPOCHS
 
-# ─── default “globali” per la CV ───
+# ─── default “globali” CV ───
 K_FOLDS    = 5
-BATCH_SIZE = TRAIN_BATCH    # 8 di default in train.py
-EPOCHS     = TRAIN_EPOCHS   # 120 di default in train.py
-
+BATCH_SIZE = DEF_BATCH
+EPOCHS     = DEF_EPOCHS
 
 # ──────────────────────────────────────────────────────────────────────────────
 def main(args: argparse.Namespace) -> None:
     device = _get_device()
-    print(f"Device in uso (k-fold): {device}\n")
+    rep    = args.rep.lower()
+    print(f"\n=== {rep.upper()} – k-fold ({args.k} fold) ===")
+    print(f"Device in uso: {device}\n")
 
-    # Dataset completo (split=None) + etichette per StratifiedKFold
-    full_ds = MelDataset(split=None, normalize=True, augment=True)
-    y = [label for _, label in full_ds]
+    # dataset completo per la rappresentazione scelta
+    full_ds = MelDataset(split=None, rep=rep, normalize=True, augment=True)
+    y = [lbl for _, lbl in full_ds]
 
     skf = StratifiedKFold(n_splits=args.k, shuffle=True, random_state=42)
     fold_acc = []
@@ -61,23 +63,26 @@ def main(args: argparse.Namespace) -> None:
             train_dl=train_dl,
             val_dl=val_dl,
             fold=fold,
+            rep=rep,
             epochs=args.epochs,
             device=device,
         )
         fold_acc.append(acc)
 
     mean, std = float(np.mean(fold_acc)), float(np.std(fold_acc))
-    print(f"\n=== Accuracy media sui {args.k} fold: {mean:.3f} ± {std:.3f} ===\n")
+    print(f"\n=== {rep.upper()} – accuracy media sui {args.k} fold: {mean:.3f} ± {std:.3f} ===\n")
 
-    with open("results_kfold.json", "w") as fp:
+    out_file = f"results_kfold_{rep}.json"
+    with open(out_file, "w") as fp:
         json.dump({"fold_acc": fold_acc, "mean": mean, "std": std}, fp, indent=2)
-    print("Salvato results_kfold.json")
-
+    print(f"Salvato {out_file}")
 
 # ─── entrypoint ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="K-fold cross-validation trainer")
-    parser.add_argument("--k",     type=int, default=K_FOLDS,    help="numero di fold")
-    parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="batch size")
-    parser.add_argument("--epochs",type=int, default=EPOCHS,     help="epoche per fold")
-    main(parser.parse_args())
+    p = argparse.ArgumentParser(description="K-fold cross-validation trainer")
+    p.add_argument("--rep",  choices=["mel","lin","mfcc","dmfcc"],
+                   default="mel",      help="feature da usare")
+    p.add_argument("--k",     type=int, default=K_FOLDS,    help="numero di fold")
+    p.add_argument("--batch", type=int, default=BATCH_SIZE, help="batch size")
+    p.add_argument("--epochs",type=int, default=EPOCHS,     help="epoche per fold")
+    main(p.parse_args())
